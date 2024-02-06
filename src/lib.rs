@@ -172,7 +172,7 @@ bitflags! {
         // /// Disable expansion of the declaration model.
         // const NO_ALLOCATION_MODEL = 0x0008;
         // /// Do not undecorate function arguments.
-        // const NO_ARGUMENTS = 0x2000;
+        const NO_ARGUMENTS = 0x2000;
         /// Disable expansion of CodeView modifiers on the this type for primary declaration.
         const NO_CV_THISTYPE = 0x0040;
         /// Disable expansion of return types for primary declarations.
@@ -491,6 +491,9 @@ struct ParserState<'a> {
     memorized_names: Vec<Name<'a>>,
 
     memorized_types: Vec<Type<'a>>,
+
+    // Demangle just a type name with no symbol
+    type_only: bool,
 }
 
 impl<'a> ParserState<'a> {
@@ -506,6 +509,17 @@ impl<'a> ParserState<'a> {
         // MSVC-style mangled symbols must start with b'?'.
         if !self.consume(b"?") {
             return Err(self.fail("does not start with b'?'"));
+        }
+
+        if self.type_only {
+            let ty = self.read_var_type(StorageClass::empty())?;
+            return Ok(ParseResult {
+                symbol: Symbol {
+                    name: Name::Discriminator(0),
+                    scope: NameSequence { names: Vec::new() },
+                },
+                symbol_type: ty,
+            });
         }
 
         if self.consume(b"?@") {
@@ -1544,18 +1558,24 @@ impl<'a> ParserState<'a> {
 }
 
 pub fn demangle(input: &str, flags: DemangleFlags) -> Result<String> {
-    serialize(&parse(input)?, flags)
+    let parse_result = parse_impl(input, flags.intersects(DemangleFlags::NO_ARGUMENTS))?;
+    serialize(&parse_result, flags)
 }
 
-pub fn parse(input: &str) -> Result<ParseResult> {
+fn parse_impl(input: &str, type_only: bool) -> Result<ParseResult> {
     let mut state = ParserState {
         remaining: input.as_bytes(),
         input,
         offset: 0,
         memorized_names: Vec::with_capacity(10),
         memorized_types: Vec::with_capacity(10),
+        type_only,
     };
     state.parse()
+}
+
+pub fn parse(input: &str) -> Result<ParseResult> {
+    parse_impl(input, false)
 }
 
 pub fn serialize(input: &ParseResult, flags: DemangleFlags) -> Result<String> {
@@ -1597,7 +1617,11 @@ impl<'a> Serializer<'a> {
         {
             self.write_pre(&parse_result.symbol_type)?;
         }
-        self.write_name(&parse_result.symbol, Some(&parse_result.symbol_type))?;
+
+        if !self.flags.contains(DemangleFlags::NO_ARGUMENTS) {
+            self.write_name(&parse_result.symbol, Some(&parse_result.symbol_type))?;
+        }
+
         if !self.flags.contains(DemangleFlags::NAME_ONLY) {
             self.write_post(&parse_result.symbol_type)?;
         }
